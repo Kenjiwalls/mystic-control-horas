@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mystic Multimarca — Control de Horas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #FAF4F0;
+    --cream-2: #F3E9E3;
+    --plum: #45163A;
+    --plum-soft: #6B2D5C;
+    --rose: #C98BA6;
+    --rose-soft: #E9CBD8;
+    --gold: #B08D3F;
+    --sage: #6B8F71;
+    --terracotta: #A8542E;
+    --ink: #3A2E3D;
+    --ink-soft: #7A6B76;
+    --line: #E7D9D2;
+    --white: #FFFFFF;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--cream);
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--rose-soft); }
+
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 28px 20px 80px; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    gap: 20px; flex-wrap: wrap;
+    padding-bottom: 22px; margin-bottom: 26px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand-eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--gold); margin: 0 0 6px;
+  }
+  h1 {
+    font-family: 'Playfair Display', serif;
+    font-weight: 600; font-style: italic;
+    font-size: 34px; margin: 0; color: var(--plum);
+    line-height: 1.1;
+  }
+  .clock-box { text-align: right; }
+  .clock {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 30px; font-weight: 500; color: var(--plum);
+    letter-spacing: 0.02em;
+  }
+  .clock-date {
+    font-size: 12.5px; color: var(--ink-soft); margin-top: 2px;
+    text-transform: capitalize;
+  }
+
+  .section-title {
+    font-family: 'Playfair Display', serif; font-style: italic;
+    font-size: 20px; color: var(--plum-soft); margin: 34px 0 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .section-sub { font-size: 12.5px; color: var(--ink-soft); margin: -10px 0 16px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+
+  .card {
+    background: var(--white); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px; display: flex; flex-direction: column; gap: 12px;
+    position: relative; transition: box-shadow .2s ease;
+  }
+  .card.active { border-color: var(--rose); box-shadow: 0 4px 18px rgba(201,139,166,0.22); }
+  .card.on-lunch { border-color: var(--gold); box-shadow: 0 4px 18px rgba(176,141,63,0.18); }
+
+  .card-top { display: flex; align-items: center; gap: 12px; }
+  .avatar-ring { position: relative; width: 52px; height: 52px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--plum-soft), var(--plum));
+    color: var(--white); font-family: 'Playfair Display', serif; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; font-size: 16px; z-index: 2;
+  }
+  .avatar.lunch { background: linear-gradient(135deg, var(--gold), #8f7130); }
+  .pulse {
+    position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--rose);
+    animation: bloom 2.4s ease-out infinite;
+  }
+  .pulse.gold { border-color: var(--gold); }
+  @keyframes bloom {
+    0% { transform: scale(0.82); opacity: 0.9; }
+    70% { transform: scale(1.28); opacity: 0; }
+    100% { opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; opacity: 0.4; } }
+
+  .name { font-weight: 600; font-size: 15px; color: var(--ink); }
+  .status-line { font-size: 12.5px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
+  .status-line.live { color: var(--sage); font-weight: 600; }
+  .status-line.lunch { color: var(--gold); font-weight: 600; }
+
+  .btn-row { display: flex; gap: 8px; }
+  .btn {
+    border: none; border-radius: 10px; padding: 11px 12px;
+    font-family: 'Inter', sans-serif; font-weight: 600; font-size: 13px;
+    cursor: pointer; transition: opacity .15s ease, transform .1s ease; width: 100%;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-in { background: var(--plum); color: var(--white); }
+  .btn-lunch { background: var(--gold); color: var(--white); }
+  .btn-out { background: var(--terracotta); color: var(--white); }
+  .btn:hover { opacity: 0.88; }
+  .link-skip {
+    background: none; border: none; color: var(--ink-soft); font-size: 11.5px;
+    text-decoration: underline; cursor: pointer; padding: 0; text-align: left;
+  }
+
+  .today-summary { font-size: 12px; color: var(--ink-soft); line-height: 1.55; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .today-summary b { color: var(--ink); }
+  .note-warn { color: var(--terracotta); }
+  .note-info { color: var(--gold); }
+
+  .legal-note {
+    margin-top: 30px; background: var(--cream-2); border-radius: 14px; padding: 16px 18px;
+    font-size: 12.5px; color: var(--ink-soft); line-height: 1.6; border-left: 3px solid var(--gold);
+  }
+  .legal-note b { color: var(--ink); }
+
+  .settings-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--ink-soft); margin-bottom: 8px; }
+  .settings-row input {
+    width: 64px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 13px; text-align: center;
+  }
+
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  select, .filters input[type="date"] {
+    padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font-family: 'Inter', sans-serif; font-size: 13px; background: var(--white); color: var(--ink);
+  }
+  .week-nav { display: flex; align-items: center; gap: 10px; }
+  .week-nav button {
+    background: var(--white); border: 1px solid var(--line); border-radius: 8px;
+    width: 30px; height: 30px; cursor: pointer; color: var(--plum); font-size: 15px;
+  }
+  .week-nav button:hover { background: var(--cream-2); }
+  .week-label { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: var(--ink-soft); }
+
+  .table-wrap { background: var(--white); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    background: var(--plum); color: var(--white); text-align: left; padding: 11px 14px;
+    font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  }
+  tbody td { padding: 10px 14px; border-top: 1px solid var(--line); white-space: nowrap; }
+  tbody tr:hover { background: var(--cream); }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; font-family: 'IBM Plex Mono', monospace; }
+  .pill-ok { background: #EAF1EA; color: var(--sage); }
+  .pill-extra { background: #F7E8DF; color: var(--terracotta); }
+  .pill-high { background: #FBF0DC; color: var(--gold); }
+  .del-btn { background: none; border: none; cursor: pointer; color: var(--ink-soft); font-size: 15px; padding: 2px 6px; border-radius: 6px; }
+  .del-btn:hover { background: var(--cream-2); color: var(--terracotta); }
+  .empty-row { text-align: center; color: var(--ink-soft); padding: 24px; font-style: italic; }
+
+  .week-summary-card {
+    background: var(--white); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 20px;
+  }
+  .week-summary-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+  .week-total { text-align: right; }
+  .week-total .hours { font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 600; color: var(--plum-soft); }
+  .week-total .hours.warn { color: var(--terracotta); }
+  .week-total .label { font-size: 11.5px; color: var(--ink-soft); }
+
+  .day-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+  .day-box {
+    background: var(--cream); border-radius: 10px; padding: 10px 8px; text-align: center;
+    border: 1px solid transparent;
+  }
+  .day-box .dname { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); }
+  .day-box .ddate { font-size: 10px; color: var(--ink-soft); margin-bottom: 6px; }
+  .day-box .dhours { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 14px; color: var(--ink); }
+  .day-box.high { background: #FBF0DC; border-color: var(--gold); }
+  .day-box.high .dhours { color: var(--gold); }
+  .day-box.empty .dhours { color: var(--ink-soft); font-weight: 400; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--plum); color: var(--white); padding: 11px 20px; border-radius: 30px;
+    font-size: 13px; font-weight: 500; box-shadow: 0 6px 20px rgba(0,0,0,0.2); opacity: 0;
+    pointer-events: none; transition: opacity .25s ease, transform .25s ease; z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-6px); }
+
+  .loading { text-align: center; padding: 40px; color: var(--ink-soft); font-style: italic; }
+
+  .view-bar {
+    display: flex; justify-content: flex-end; margin-bottom: 4px;
+  }
+  .view-toggle {
+    background: var(--white); border: 1px solid var(--line); border-radius: 30px;
+    padding: 6px 14px; font-size: 12px; color: var(--plum-soft); cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; gap: 6px;
+  }
+  .view-toggle:hover { background: var(--cream-2); }
+
+  .employee-note {
+    text-align: center; color: var(--ink-soft); font-size: 12.5px; font-style: italic;
+    margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--line);
+  }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(58,46,61,0.45);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100; padding: 20px;
+  }
+  .modal-box {
+    background: var(--white); border-radius: 16px; padding: 26px;
+    width: 100%; max-width: 340px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  .modal-title {
+    font-family: 'Playfair Display', serif; font-weight: 600; font-style: italic;
+    font-size: 19px; color: var(--plum); margin: 0 0 12px;
+  }
+  .modal-text { font-size: 13.5px; color: var(--ink-soft); margin-bottom: 16px; line-height: 1.5; }
+  .modal-box input[type="text"], .modal-box input[type="password"] {
+    width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 15px; margin-bottom: 14px;
+    text-align: center; letter-spacing: 0.1em;
+  }
+  .modal-actions { display: flex; gap: 10px; }
+  .modal-actions .btn { width: auto; flex: 1; }
+  .btn-cancel { background: var(--cream-2); color: var(--ink); }
+
+  @media (max-width: 700px) {
+    h1 { font-size: 24px; }
+    .clock { font-size: 20px; }
+    .header { flex-direction: column; align-items: flex-start; }
+    .clock-box { text-align: left; }
+    .day-strip { grid-template-columns: repeat(4, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="loading">Cargando registros…</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const EMPLOYEES = [
+  "Alba López", "Eugenio González", "Yeremy Mendoza", "Luis Piedrahita",
+  "Daniel Suárez", "Andrea Pardo", "Lina Acosta"
+];
+const DAY_NAMES = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+
+// ============================================================
+// CONFIGURACIÓN DEL BACKEND — reemplaza esta URL por la que te
+// entregue Google Apps Script al publicar el Web App (paso 3 del
+// instructivo). Debe terminar en /exec
+// ============================================================
+const API_URL = "https://script.google.com/macros/s/AKfycby2tXdfS4Bzi-19Vm3PtTJVUxQbYAHDn0KKlkUbqjRbPQgHeGhs29zbh3dazHahVO8A/exec";
+
+let records = [];
+let settings = { standardWeeklyHours: 42, standardLunchMinutes: 60, adminPin: "2026" };
+let filterName = "TODOS";
+let filterFrom = null;
+let filterTo = null;
+let weekEmployee = EMPLOYEES[0];
+let weekOffset = 0; // 0 = current week
+let isAdmin = false;
+
+function pad(n) { return String(n).padStart(2, "0"); }
+function todayStr(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function initials(name) { return name.split(" ").map(p => p[0]).slice(0,2).join("").toUpperCase(); }
+
+function formatTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  let h = d.getHours(); const m = d.getMinutes();
+  const ampm = h >= 12 ? "p.m." : "a.m.";
+  h = h % 12; if (h === 0) h = 12;
+  return `${h}:${pad(m)} ${ampm}`;
+}
+function formatDateEs(dateStr) {
+  const [y,m,d] = dateStr.split("-").map(Number);
+  return new Date(y, m-1, d).toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+function hoursBetween(a, b) { return (new Date(b) - new Date(a)) / 3600000; }
+function minutesBetween(a, b) { return (new Date(b) - new Date(a)) / 60000; }
+function formatDuration(hrs) {
+  if (hrs == null || isNaN(hrs)) return "—";
+  const sign = hrs < 0 ? "-" : "";
+  hrs = Math.abs(hrs);
+  const h = Math.floor(hrs);
+  const m = Math.round((hrs - h) * 60);
+  return `${sign}${h}h ${pad(m)}m`;
+}
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+function closeModal() {
+  const m = document.getElementById("modal-root");
+  if (m) m.remove();
+}
+
+function showPinModal(onSubmit) {
+  closeModal();
+  const div = document.createElement("div");
+  div.id = "modal-root";
+  div.className = "modal-overlay";
+  div.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">Vista administrador</div>
+      <div class="modal-text">Ingresa el PIN para ver los resúmenes de horas.</div>
+      <input type="password" id="pin-input" placeholder="PIN" inputmode="numeric" autofocus />
+      <div class="modal-actions">
+        <button class="btn btn-cancel" id="pin-cancel">Cancelar</button>
+        <button class="btn btn-in" id="pin-submit">Entrar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(div);
+  const input = document.getElementById("pin-input");
+  input.focus();
+  const submit = () => { const v = input.value; closeModal(); onSubmit(v); };
+  document.getElementById("pin-submit").addEventListener("click", submit);
+  document.getElementById("pin-cancel").addEventListener("click", closeModal);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  div.addEventListener("click", (e) => { if (e.target === div) closeModal(); });
+}
+
+function showConfirmModal(title, text, onConfirm) {
+  closeModal();
+  const div = document.createElement("div");
+  div.id = "modal-root";
+  div.className = "modal-overlay";
+  div.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">${title}</div>
+      <div class="modal-text">${text}</div>
+      <div class="modal-actions">
+        <button class="btn btn-cancel" id="confirm-cancel">Cancelar</button>
+        <button class="btn btn-out" id="confirm-ok">Confirmar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(div);
+  document.getElementById("confirm-ok").addEventListener("click", () => { closeModal(); onConfirm(); });
+  document.getElementById("confirm-cancel").addEventListener("click", closeModal);
+  div.addEventListener("click", (e) => { if (e.target === div) closeModal(); });
+}
+
+// ---- Capa de comunicación con el backend (Google Apps Script) ----
+async function apiGet(action) {
+  const res = await fetch(`${API_URL}?action=${action}&_=${Date.now()}`);
+  if (!res.ok) throw new Error("Error de red");
+  return res.json();
+}
+async function apiPost(payload) {
+  const res = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // evita preflight CORS
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error("Error de red");
+  return res.json();
+}
+
+async function loadData() {
+  try {
+    const [recs, sett] = await Promise.all([apiGet("getRecords"), apiGet("getSettings")]);
+    records = (recs || []).map(r => ({ ...r, lunchSkipped: r.lunchSkipped === true || r.lunchSkipped === "true" || r.lunchSkipped === "TRUE" }));
+    settings = {
+      standardWeeklyHours: Number(sett.standardWeeklyHours) || 42,
+      standardLunchMinutes: Number(sett.standardLunchMinutes) || 60,
+      adminPin: sett.adminPin ? String(sett.adminPin) : "2026"
+    };
+  } catch (e) {
+    records = [];
+    settings = { standardWeeklyHours: 42, standardLunchMinutes: 60, adminPin: "2026" };
+    showToast("No se pudo conectar con la base de datos. Revisa la URL configurada.");
+  }
+}
+async function saveSettings() {
+  try { await apiPost({ action: "saveSettings", settings }); }
+  catch (e) { showToast("No se pudo guardar la configuración. Revisa tu conexión."); }
+}
+
+function getOpenRecord(name) {
+  const today = todayStr();
+  return records.find(r => r.name === name && r.date === today && !r.checkOut);
+}
+function getTodayClosedRecords(name) {
+  const today = todayStr();
+  return records.filter(r => r.name === name && r.date === today && r.checkOut);
+}
+
+async function markCheckIn(name) {
+  if (getOpenRecord(name)) { showToast(`${name.split(" ")[0]} ya tiene una entrada activa hoy.`); return; }
+  const rec = {
+    id: Date.now() + "-" + Math.random().toString(36).slice(2,7),
+    name, date: todayStr(), checkIn: new Date().toISOString(),
+    lunchOut: "", lunchIn: "", lunchSkipped: false, checkOut: ""
+  };
+  records.push(rec); render();
+  try { await apiPost({ action: "addRecord", record: rec }); showToast(`Entrada registrada para ${name.split(" ")[0]}`); }
+  catch (e) { showToast("No se pudo guardar la entrada. Revisa tu conexión."); }
+}
+async function markLunchOut(name) {
+  const open = getOpenRecord(name);
+  if (!open) return;
+  open.lunchOut = new Date().toISOString(); render();
+  try { await apiPost({ action: "updateRecord", id: open.id, patch: { lunchOut: open.lunchOut } }); showToast(`Salida a almuerzo registrada`); }
+  catch (e) { showToast("No se pudo guardar. Revisa tu conexión."); }
+}
+async function markLunchIn(name) {
+  const open = getOpenRecord(name);
+  if (!open) return;
+  open.lunchIn = new Date().toISOString(); render();
+  try { await apiPost({ action: "updateRecord", id: open.id, patch: { lunchIn: open.lunchIn } }); showToast(`Regreso de almuerzo registrado`); }
+  catch (e) { showToast("No se pudo guardar. Revisa tu conexión."); }
+}
+async function skipLunch(name) {
+  const open = getOpenRecord(name);
+  if (!open) return;
+  showConfirmModal(
+    "Confirmar",
+    `¿Confirmar que ${name.split(" ")[0]} no tomará almuerzo hoy?`,
+    async () => {
+      open.lunchSkipped = true; render();
+      try { await apiPost({ action: "updateRecord", id: open.id, patch: { lunchSkipped: true } }); }
+      catch (e) { showToast("No se pudo guardar. Revisa tu conexión."); }
+    }
+  );
+}
+async function markCheckOut(name) {
+  const open = getOpenRecord(name);
+  if (!open) return;
+  open.checkOut = new Date().toISOString(); render();
+  try { await apiPost({ action: "updateRecord", id: open.id, patch: { checkOut: open.checkOut } }); showToast(`Salida registrada para ${name.split(" ")[0]}`); }
+  catch (e) { showToast("No se pudo guardar. Revisa tu conexión."); }
+}
+async function deleteRecord(id) {
+  showConfirmModal(
+    "Eliminar registro",
+    "¿Eliminar este registro? Esta acción no se puede deshacer.",
+    async () => {
+      records = records.filter(r => r.id !== id); render();
+      try { await apiPost({ action: "deleteRecord", id }); }
+      catch (e) { showToast("No se pudo eliminar en el servidor. Revisa tu conexión."); }
+    }
+  );
+}
+
+function lunchMinutesOf(r) {
+  if (r.lunchOut && r.lunchIn) return minutesBetween(r.lunchOut, r.lunchIn);
+  return 0;
+}
+function workedHoursOf(r) {
+  if (!r.checkOut) return null;
+  const span = hoursBetween(r.checkIn, r.checkOut);
+  const lunch = r.lunchSkipped ? 0 : lunchMinutesOf(r) / 60;
+  return span - lunch;
+}
+
+function getMonday(d = new Date()) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  date.setDate(diff); date.setHours(0,0,0,0);
+  return date;
+}
+function weekDates(offset = 0) {
+  const monday = getMonday();
+  monday.setDate(monday.getDate() + offset * 7);
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday); d.setDate(monday.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+
+function weeklyTotalsAllEmployees() {
+  const days = weekDates(0);
+  const from = todayStr(days[0]), to = todayStr(days[6]);
+  return EMPLOYEES.map(name => {
+    const recs = records.filter(r => r.name === name && r.date >= from && r.date <= to && r.checkOut);
+    let total = 0;
+    recs.forEach(r => { const h = workedHoursOf(r); if (h != null) total += h; });
+    return { name, total, extra: Math.max(0, total - settings.standardWeeklyHours) };
+  });
+}
+
+function buildEmployeeCard(name, adminMode) {
+  const open = getOpenRecord(name);
+  const closedToday = getTodayClosedRecords(name);
+  const lastDone = closedToday.slice(-1)[0];
+
+  let cardClass = "";
+  let avatarClass = "";
+  let pulseClass = "";
+  let statusHtml = "";
+  let actionsHtml = "";
+  let summaryHtml = "";
+
+  if (open && open.lunchOut && !open.lunchIn) {
+    cardClass = "on-lunch"; avatarClass = "lunch"; pulseClass = "gold";
+    statusHtml = `<div class="status-line lunch">🍽 en almuerzo desde ${formatTime(open.lunchOut)}</div>`;
+    actionsHtml = `<div class="btn-row"><button class="btn btn-lunch" data-action="lunchIn" data-name="${name}">Regreso de almuerzo</button></div>`;
+  } else if (open) {
+    cardClass = "active";
+    statusHtml = `<div class="status-line live">● activa desde ${formatTime(open.checkIn)}</div>`;
+    if (!open.lunchOut && !open.lunchSkipped) {
+      actionsHtml = `
+        <div class="btn-row"><button class="btn btn-lunch" data-action="lunchOut" data-name="${name}">Salida a almuerzo</button></div>
+        <button class="link-skip" data-action="skipLunch" data-name="${name}">Hoy no tomará almuerzo</button>
+      `;
+    } else {
+      actionsHtml = `<div class="btn-row"><button class="btn btn-out" data-action="out" data-name="${name}">Marcar salida</button></div>`;
+      if (open.lunchOut && open.lunchIn) {
+        const lm = lunchMinutesOf(open);
+        if (lm < settings.standardLunchMinutes) {
+          summaryHtml = `<div class="today-summary note-info">Almuerzo de ${Math.round(lm)} min — ${settings.standardLunchMinutes - Math.round(lm)} min menos del estándar; quedan incluidos como tiempo trabajado.</div>`;
+        }
+      }
+    }
+  } else if (lastDone) {
+    statusHtml = `<div class="status-line">Jornada cerrada a las ${formatTime(lastDone.checkOut)}</div>`;
+    actionsHtml = `<div class="btn-row"><button class="btn btn-in" data-action="in" data-name="${name}">Marcar nueva entrada</button></div>`;
+    if (adminMode) {
+      const h = workedHoursOf(lastDone);
+      let lunchNote = "";
+      if (lastDone.lunchSkipped) lunchNote = " · sin almuerzo";
+      else if (lastDone.lunchOut && lastDone.lunchIn) {
+        const lm = lunchMinutesOf(lastDone);
+        lunchNote = ` · almuerzo ${Math.round(lm)} min`;
+      }
+      summaryHtml = `<div class="today-summary">Hoy: <b>${formatDuration(h)}</b> trabajadas${lunchNote}</div>`;
+    } else {
+      summaryHtml = `<div class="today-summary">Jornada de hoy completada. ✓</div>`;
+    }
+  } else {
+    statusHtml = `<div class="status-line">Sin registrar hoy</div>`;
+    actionsHtml = `<div class="btn-row"><button class="btn btn-in" data-action="in" data-name="${name}">Marcar entrada</button></div>`;
+  }
+
+  return `
+    <div class="card ${cardClass}">
+      <div class="card-top">
+        <div class="avatar-ring">
+          ${open ? `<div class="pulse ${pulseClass}"></div>` : ''}
+          <div class="avatar ${avatarClass}">${initials(name)}</div>
+        </div>
+        <div>
+          <div class="name">${name}</div>
+          ${statusHtml}
+        </div>
+      </div>
+      ${actionsHtml}
+      ${summaryHtml}
+    </div>
+  `;
+}
+
+function buildFilteredRows() {
+  let rows = [...records].filter(r => r.checkOut);
+  if (filterName !== "TODOS") rows = rows.filter(r => r.name === filterName);
+  if (filterFrom) rows = rows.filter(r => r.date >= filterFrom);
+  if (filterTo) rows = rows.filter(r => r.date <= filterTo);
+  rows.sort((a,b) => (a.date + a.checkIn) < (b.date + b.checkIn) ? 1 : -1);
+  return rows;
+}
+
+function buildWeekBreakdown() {
+  const days = weekDates(weekOffset);
+  const from = todayStr(days[0]), to = todayStr(days[6]);
+  const recs = records.filter(r => r.name === weekEmployee && r.date >= from && r.date <= to && r.checkOut);
+  let total = 0;
+  const byDate = {};
+  recs.forEach(r => { const h = workedHoursOf(r); byDate[r.date] = (byDate[r.date] || 0) + h; total += h; });
+  const extra = Math.max(0, total - settings.standardWeeklyHours);
+
+  const dayBoxes = days.map(d => {
+    const ds = todayStr(d);
+    const h = byDate[ds];
+    const isHigh = h != null && h > 8.5;
+    const isEmpty = h == null;
+    return `
+      <div class="day-box ${isHigh ? 'high' : ''} ${isEmpty ? 'empty' : ''}">
+        <div class="dname">${DAY_NAMES[d.getDay()]}</div>
+        <div class="ddate">${d.getDate()}/${pad(d.getMonth()+1)}</div>
+        <div class="dhours">${isEmpty ? '—' : formatDuration(h)}</div>
+      </div>
+    `;
+  }).join("");
+
+  const label = `${days[0].getDate()} ${days[0].toLocaleDateString('es-CO',{month:'short'})} — ${days[6].getDate()} ${days[6].toLocaleDateString('es-CO',{month:'short'})}`;
+
+  return { dayBoxes, total, extra, label };
+}
+
+function viewBarHtml() {
+  return `
+    <div class="view-bar">
+      <button class="view-toggle" id="view-toggle-btn">
+        ${isAdmin ? '👁 Salir a vista de equipo' : '🔒 Vista administrador'}
+      </button>
+    </div>
+  `;
+}
+
+function attachViewToggle() {
+  document.getElementById("view-toggle-btn").addEventListener("click", () => {
+    if (isAdmin) { isAdmin = false; render(); return; }
+    showPinModal((pin) => {
+      if (pin === settings.adminPin) { isAdmin = true; render(); }
+      else showToast("PIN incorrecto");
+    });
+  });
+}
+
+function render() {
+  if (isAdmin) renderAdmin(); else renderEmployee();
+}
+
+function renderEmployee() {
+  const app = document.getElementById("app");
+  const now = new Date();
+
+  app.innerHTML = `
+    ${viewBarHtml()}
+    <div class="header">
+      <div>
+        <p class="brand-eyebrow">Mystic Multimarca</p>
+        <h1>Control de horas del equipo</h1>
+      </div>
+      <div class="clock-box">
+        <div class="clock" id="live-clock">--:--:--</div>
+        <div class="clock-date">${now.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      </div>
+    </div>
+
+    <div class="section-title">Registrar entrada / almuerzo / salida</div>
+    <div class="grid">${EMPLOYEES.map(n => buildEmployeeCard(n, false)).join("")}</div>
+
+    <div class="employee-note">Marca tu entrada, almuerzo y salida aquí. Los resúmenes de horas y horas extra los administra la coordinación del equipo.</div>
+  `;
+
+  document.getElementById("live-clock").textContent = now.toLocaleTimeString('es-CO', { hour12: true });
+  attachViewToggle();
+  attachCardActions();
+}
+
+function renderAdmin() {
+  const app = document.getElementById("app");
+  const now = new Date();
+  const totals = weeklyTotalsAllEmployees();
+  const filteredRows = buildFilteredRows();
+  const wb = buildWeekBreakdown();
+
+  app.innerHTML = `
+    ${viewBarHtml()}
+    <div class="header">
+      <div>
+        <p class="brand-eyebrow">Mystic Multimarca</p>
+        <h1>Control de horas del equipo</h1>
+      </div>
+      <div class="clock-box">
+        <div class="clock" id="live-clock">--:--:--</div>
+        <div class="clock-date">${now.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      </div>
+    </div>
+
+    <div class="section-title">Registrar entrada / almuerzo / salida</div>
+    <div class="grid">${EMPLOYEES.map(n => buildEmployeeCard(n, true)).join("")}</div>
+
+    <div class="section-title">Resumen de la semana — todo el equipo</div>
+    <div class="section-sub">Jornada semanal estándar: ${settings.standardWeeklyHours}h. Lo que exceda se cuenta como hora extra.</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nombre</th><th>Horas trabajadas (semana)</th><th>Horas extra</th></tr></thead>
+        <tbody>
+          ${totals.map(t => `
+            <tr>
+              <td>${t.name}</td>
+              <td><span class="pill pill-ok">${formatDuration(t.total)}</span></td>
+              <td>${t.extra > 0 ? `<span class="pill ${t.extra > 12 ? 'pill-extra' : 'pill-high'}">${formatDuration(t.extra)}${t.extra > 12 ? ' ⚠' : ''}</span>` : '—'}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-title">¿En qué días están las horas extra?</div>
+    <div class="section-sub">Selecciona una persona para ver el detalle día por día de la semana.</div>
+    <div class="week-summary-card">
+      <div class="week-summary-head">
+        <div class="filters" style="margin-bottom:0">
+          <select id="week-employee">
+            ${EMPLOYEES.map(n => `<option value="${n}" ${weekEmployee===n?'selected':''}>${n}</option>`).join("")}
+          </select>
+          <div class="week-nav">
+            <button id="week-prev">‹</button>
+            <span class="week-label">${wb.label}${weekOffset===0 ? ' (actual)' : ''}</span>
+            <button id="week-next">›</button>
+          </div>
+        </div>
+        <div class="week-total">
+          <div class="hours ${wb.extra > 0 ? 'warn' : ''}">${formatDuration(wb.total)}</div>
+          <div class="label">trabajadas esta semana · ${wb.extra > 0 ? `<b style="color:var(--terracotta)">${formatDuration(wb.extra)} extra</b>` : 'sin horas extra'}</div>
+        </div>
+      </div>
+      <div class="day-strip">${wb.dayBoxes}</div>
+    </div>
+
+    <div class="section-title">Configuración</div>
+    <div class="settings-row">
+      Jornada estándar semanal: <input type="number" id="standard-weekly" min="1" max="60" step="1" value="${settings.standardWeeklyHours}" /> horas
+    </div>
+    <div class="settings-row">
+      Almuerzo estándar: <input type="number" id="standard-lunch" min="0" max="180" step="5" value="${settings.standardLunchMinutes}" /> minutos
+    </div>
+    <div class="settings-row">
+      PIN de administrador: <input type="text" id="admin-pin" maxlength="8" style="width:90px" value="${settings.adminPin}" />
+      <span style="font-size:11.5px">— compártelo solo con quien deba ver los resúmenes de horas.</span>
+    </div>
+
+    <div class="section-title">Historial de registros</div>
+    <div class="filters">
+      <select id="filter-name">
+        <option value="TODOS">Todo el equipo</option>
+        ${EMPLOYEES.map(n => `<option value="${n}" ${filterName===n?'selected':''}>${n}</option>`).join("")}
+      </select>
+      <input type="date" id="filter-from" value="${filterFrom || ''}" />
+      <input type="date" id="filter-to" value="${filterTo || ''}" />
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Nombre</th><th>Fecha</th><th>Entrada</th><th>Almuerzo</th><th>Salida</th><th>Horas</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${filteredRows.length === 0
+            ? `<tr><td colspan="7" class="empty-row">No hay registros para este filtro todavía.</td></tr>`
+            : filteredRows.map(r => {
+                const h = workedHoursOf(r);
+                let lunchTxt = "—";
+                if (r.lunchSkipped) lunchTxt = "sin almuerzo";
+                else if (r.lunchOut && r.lunchIn) lunchTxt = `${formatTime(r.lunchOut)}–${formatTime(r.lunchIn)}`;
+                return `
+                  <tr>
+                    <td>${r.name}</td>
+                    <td>${formatDateEs(r.date)}</td>
+                    <td>${formatTime(r.checkIn)}</td>
+                    <td>${lunchTxt}</td>
+                    <td>${formatTime(r.checkOut)}</td>
+                    <td><span class="pill pill-ok">${formatDuration(h)}</span></td>
+                    <td><button class="del-btn" data-del="${r.id}" title="Eliminar registro">✕</button></td>
+                  </tr>
+                `;
+              }).join("")
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <div class="legal-note">
+      <b>Referencia legal (Colombia, 2026):</b> la jornada máxima ordinaria es de 42 horas semanales. Las horas extra tienen un tope legal de 2 horas diarias y 12 horas semanales, con recargos distintos si son diurnas, nocturnas, dominicales o festivas. El almuerzo no cuenta como tiempo trabajado, salvo la parte de él que la persona haya trabajado por tomarlo más corto — esta herramienta ya lo suma automáticamente a las horas del día. Para la liquidación y el pago exacto de recargos, valida los valores con tu contador o asesor laboral.
+    </div>
+  `;
+
+  document.getElementById("live-clock").textContent = now.toLocaleTimeString('es-CO', { hour12: true });
+  attachViewToggle();
+  attachCardActions();
+
+  document.getElementById("standard-weekly").addEventListener("change", async (e) => {
+    const v = parseFloat(e.target.value);
+    settings.standardWeeklyHours = isNaN(v) || v <= 0 ? 42 : v;
+    await saveSettings(); render();
+  });
+  document.getElementById("standard-lunch").addEventListener("change", async (e) => {
+    const v = parseFloat(e.target.value);
+    settings.standardLunchMinutes = isNaN(v) || v < 0 ? 60 : v;
+    await saveSettings(); render();
+  });
+  document.getElementById("admin-pin").addEventListener("change", async (e) => {
+    const v = e.target.value.trim();
+    settings.adminPin = v || "2026";
+    await saveSettings(); showToast("PIN actualizado"); render();
+  });
+  document.getElementById("filter-name").addEventListener("change", (e) => { filterName = e.target.value; render(); });
+  document.getElementById("filter-from").addEventListener("change", (e) => { filterFrom = e.target.value || null; render(); });
+  document.getElementById("filter-to").addEventListener("change", (e) => { filterTo = e.target.value || null; render(); });
+  document.getElementById("week-employee").addEventListener("change", (e) => { weekEmployee = e.target.value; render(); });
+  document.getElementById("week-prev").addEventListener("click", () => { weekOffset -= 1; render(); });
+  document.getElementById("week-next").addEventListener("click", () => { weekOffset = Math.min(0, weekOffset + 1); render(); });
+}
+
+function attachCardActions() {
+  const app = document.getElementById("app");
+  app.querySelectorAll("[data-action='in']").forEach(b => b.addEventListener("click", () => markCheckIn(b.dataset.name)));
+  app.querySelectorAll("[data-action='lunchOut']").forEach(b => b.addEventListener("click", () => markLunchOut(b.dataset.name)));
+  app.querySelectorAll("[data-action='lunchIn']").forEach(b => b.addEventListener("click", () => markLunchIn(b.dataset.name)));
+  app.querySelectorAll("[data-action='skipLunch']").forEach(b => b.addEventListener("click", () => skipLunch(b.dataset.name)));
+  app.querySelectorAll("[data-action='out']").forEach(b => b.addEventListener("click", () => markCheckOut(b.dataset.name)));
+  app.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => deleteRecord(b.dataset.del)));
+}
+
+setInterval(() => {
+  const el = document.getElementById("live-clock");
+  if (el) el.textContent = new Date().toLocaleTimeString('es-CO', { hour12: true });
+}, 1000);
+setInterval(() => { if (document.querySelector('.card.active, .card.on-lunch')) render(); }, 30000);
+
+(async function init() { await loadData(); render(); })();
+</script>
+</body>
+</html>
