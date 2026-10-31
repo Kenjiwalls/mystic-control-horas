@@ -1528,7 +1528,14 @@ const actions = {
   "sub-tab": (t) => { ui.tab = t.dataset.v; render(); },
   "goto-equipo": () => { ui.tab = "equipo"; render(); window.scrollTo(0, 0); },
   in: (t) => markCheckIn(t.dataset.name), lunchOut: (t) => markLunchOut(t.dataset.name), lunchIn: (t) => markLunchIn(t.dataset.name),
-  out: (t) => markCheckOut(t.dataset.name),
+  out: (t) => {
+    const name = t.dataset.name, o = getOpen(name); if (!o) return;
+    const h = (Date.now() - Date.parse(o.checkIn)) / 3600000;
+    if (!o.lunchOut && h > settings.lunchRequiredHours) { toast(`Antes de salir registra tu almuerzo (obligatorio: entre ${settings.lunchMin} y ${settings.lunchMax} min).`); return; }
+    const mins = Math.max(0, Math.round(h * 60)), dur = `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, "0")} min`;
+    const warn = o.lunchOut && !o.lunchIn ? `<br><b>Ojo:</b> tienes el almuerzo abierto (no has marcado el regreso).` : !o.lunchOut ? `<br><b>Ojo:</b> no registraste almuerzo hoy.` : "";
+    confirmModal("¿Marcar tu salida?", `Vas a registrar la salida de <b>${esc(first(name))}</b> ahora (${E.fmtClock(Date.now())}).<br>Entrada: ${fmtTime(o.checkIn)} · Llevas ${dur}.${warn}<br><small>Después no podrás deshacerlo desde aquí; si te equivocas, avisa a coordinación.</small>`, "Sí, marcar salida", () => markCheckOut(name));
+  },
   "period-prev": () => { ui.period = E.shiftPeriod(ui.period, -1); ui.openEmp = null; render(); },
   "period-next": () => { ui.period = E.shiftPeriod(ui.period, 1); ui.openEmp = null; render(); },
   "period-today": () => { ui.period = E.periodOf(today()); ui.openEmp = null; render(); },
