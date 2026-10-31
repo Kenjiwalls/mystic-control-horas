@@ -812,61 +812,76 @@ const SEED = { version: "2026-10-29", smmlv: 1750905, rows:[] };
 </script>
 <script>
 /* ============================================================
-   Sincronización opcional con Google Sheets (vía Google Apps Script)
-   - La plataforma sigue funcionando igual si no se configura o si falla la red.
-   - Solo se envían registros de horas y parámetros de almuerzo/jornada.
-     NUNCA salarios, ausencias ni el PIN.
-   - Lo que viene de la hoja solo AGREGA registros que no existan aquí (no pisa ni borra).
+   Sincronización con la base de datos en Google Sheets
+   (usa el script «Backend Control Horas» ya desplegado: getRecords, getSettings,
+    addRecord, updateRecord, deleteRecord, saveSettings).
+   - La hoja es la fuente de verdad: se lee al abrir y cada minuto; los cambios locales se envían
+     unos segundos después de cada marcación comparando contra lo último sincronizado.
+   - Si no hay red, la plataforma sigue funcionando y reintenta. Nunca se envían salarios ni ausencias.
    ============================================================ */
 const Sync = (() => {
+  const DEFAULT_URL = "https://script.google.com/macros/s/AKfycby2tXdfS4Bzi-19Vm3PtTJVUxQbYAHDn0KKlkUbqjRbPQgHeGhs29zbh3dazHahVO8A/exec";
   const st = { state: "off", last: null, msg: "" };
-  let timer = null, busy = false, again = false, failStreak = 0;
   const URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
-  const cfg = () => ({ url: String(settings.sheetUrl || "").trim(), token: String(settings.sheetToken || "").trim(), auto: settings.sheetAuto !== false });
-  const enabled = () => { const c = cfg(); return URL_RE.test(c.url) && c.token.length >= 8; };
+  const SETTING_KEYS = ["standardWeeklyHours", "lunchMin", "lunchMax", "lunchRequiredHours", "adminPin"];
+  let timer = null, busy = false, again = false, failStreak = 0;
+  let synced = false;            // ¿ya se leyó la hoja en esta sesión? (no se envía nada antes)
+  let snap = new Map();          // id → fila serializada tal como está en la hoja
+  let remoteSettings = {};       // últimos ajustes conocidos de la hoja
+
+  const cfg = () => ({ url: String(settings.sheetUrl || DEFAULT_URL).trim(), token: String(settings.sheetToken || "").trim(), auto: settings.sheetAuto !== false });
+  const enabled = () => URL_RE.test(cfg().url);
   const p2 = (n) => String(n).padStart(2, "0");
-  const hms = (iso) => { const d = new Date(Date.parse(iso) + E.COL); return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`; };
+  const hms = (iso) => { if (!iso) return ""; const d = new Date(Date.parse(iso) + E.COL); return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`; };
 
-  // Registro → fila de la hoja: id, nombre, fecha, entrada, sale almuerzo, regresa, (sin almuerzo: ya no aplica), salida, nota, excluido
-  const toRow = (r) => [r.id, r.name, r.date, hms(r.checkIn), r.lunchOut ? hms(r.lunchOut) : "", r.lunchIn ? hms(r.lunchIn) : "", false, r.checkOut ? hms(r.checkOut) : "", r.note || "", !!r.excluded];
+  // Registro → objeto del backend (las horas van como HH:MM:SS de Colombia)
+  const toObj = (r) => ({ id: r.id, name: r.name, date: r.date, checkIn: hms(r.checkIn), lunchOut: hms(r.lunchOut), lunchIn: hms(r.lunchIn), lunchSkipped: r.lunchSkipped === true, checkOut: hms(r.checkOut) });
+  const toRow = (r) => { const o = toObj(r); return [o.id, o.name, o.date, o.checkIn, o.lunchOut, o.lunchIn, o.lunchSkipped, o.checkOut, r.note || "", !!r.excluded]; };
+  const ser = (o) => [o.id, o.name, o.date, o.checkIn, o.lunchOut, o.lunchIn, o.lunchSkipped ? 1 : 0, o.checkOut].join("|");
 
-  // Fila de la hoja → registro (las horas son de Colombia; si una hora es menor que la anterior, es del día siguiente)
-  function fromRow(row) {
-    const [id, name, date, tin, lo, li, , tout, note, excl] = row.map((x) => (x == null ? "" : x));
-    if (!id || !name || !/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || !/^\d{1,2}:\d{2}(:\d{2})?$/.test(String(tin))) return null;
+  const normT = (v) => {
+    const s = String(v == null ? "" : v).trim(); if (!s) return "";
+    const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap])?\.?\s*m?\.?$/i.exec(s); if (!m) return s;
+    let h = +m[1]; if (m[4]) { const pm = m[4].toLowerCase() === "p"; if (pm && h < 12) h += 12; if (!pm && h === 12) h = 0; }
+    return `${p2(h)}:${m[2]}:${m[3] || "00"}`;
+  };
+  // Objeto del backend → registro. Si una hora es menor que la anterior, es del día siguiente.
+  function fromObj(o) {
+    if (!o) return null;
+    const id = String(o.id == null ? "" : o.id).trim(), name = String(o.name || "").trim(), date = String(o.date || "").trim().replace(/^'/, "");
+    if (!id || !name || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
     let prev = -Infinity;
-    const at = (t) => {
-      if (!t) return null;
-      const tt = /^\d{1,2}:\d{2}$/.test(t) ? t + ":00" : t;
-      let ms = Date.parse(`${date}T${tt.padStart(8, "0")}-05:00`);
-      if (isNaN(ms)) return null;
-      while (ms < prev) ms += 86400000;
-      prev = ms; return new Date(ms).toISOString();
-    };
-    const checkIn = at(String(tin)), lunchOut = at(String(lo)), lunchIn = at(String(li)), checkOut = at(String(tout));
+    const at = (t) => { t = normT(t); if (!t) return null; let ms = Date.parse(`${date}T${t}-05:00`); if (isNaN(ms)) return null; while (ms < prev) ms += 86400000; prev = ms; return new Date(ms).toISOString(); };
+    const checkIn = at(o.checkIn), lunchOut = at(o.lunchOut), lunchIn = at(o.lunchIn), checkOut = at(o.checkOut);
     if (!checkIn) return null;
-    const rec = { id: String(id), name: String(name), date: String(date), checkIn, lunchOut, lunchIn, lunchSkipped: false, checkOut, imported: true };
-    if (note) rec.note = String(note);
-    if (excl === true || String(excl).toUpperCase() === "TRUE") rec.excluded = true;
-    return rec;
+    const sk = o.lunchSkipped === true || String(o.lunchSkipped).toUpperCase() === "TRUE";
+    return { id, name, date, checkIn, lunchOut, lunchIn, lunchSkipped: sk, checkOut };
   }
-  const known = (r) => records.some((x) => x.id === r.id || (x.name === r.name && Math.abs(Date.parse(x.checkIn) - Date.parse(r.checkIn)) < 60000));
+  const fromRow = (row) => { const [id, name, date, checkIn, lunchOut, lunchIn, lunchSkipped, checkOut] = row; const r = fromObj({ id, name, date, checkIn, lunchOut, lunchIn, lunchSkipped, checkOut }); return r && Object.assign(r, { imported: true }); };
 
-  async function call(payload) {
-    const c = cfg();
-    const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 20000);
+  async function http(method, payload) {
+    const c = cfg(), ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 20000);
     try {
-      const res = await fetch(c.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(Object.assign({ token: c.token }, payload)), redirect: "follow", signal: ctl.signal });
+      let res;
+      if (method === "GET") {
+        const q = new URLSearchParams({ action: payload.action, _: String(Date.now()) }); if (c.token) q.set("token", c.token);
+        res = await fetch(`${c.url}?${q}`, { redirect: "follow", signal: ctl.signal });
+      } else {
+        const body = c.token ? Object.assign({ token: c.token }, payload) : payload;
+        res = await fetch(c.url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body), redirect: "follow", signal: ctl.signal });
+      }
       if (!res.ok) throw new Error("HTTP " + res.status);
-      let data; try { data = await res.json(); } catch (e) { throw new Error("La dirección no responde como se esperaba (¿se publicó el script como aplicación web para «Cualquier usuario»?)"); }
-      if (!data || data.ok !== true) throw new Error(data && data.error === "token" ? "Token incorrecto" : (data && data.error) || "Respuesta inválida");
+      let data; try { data = await res.json(); } catch (e) { throw new Error("La dirección no responde como se esperaba (revisa que el script esté implementado para «Cualquier usuario»)"); }
+      if (data && !Array.isArray(data) && data.error) throw new Error(/token/i.test(String(data.error)) ? "Token incorrecto" : String(data.error));
       return data;
     } catch (e) {
-      throw new Error(e.name === "AbortError" ? "Tiempo de espera agotado" : e.message === "Failed to fetch" ? "Sin conexión con Google (revisa internet o que la plataforma permita conectarse a script.google.com)" : e.message);
+      throw new Error(e.name === "AbortError" ? "Tiempo de espera agotado" : e.message === "Failed to fetch" ? "Sin conexión con Google (revisa internet)" : e.message);
     } finally { clearTimeout(to); }
   }
-  const setState = (state, msg) => { st.state = state; st.msg = msg || ""; if (state === "ok") st.last = new Date().toISOString(); refreshBadge(); };
-  function refreshBadge() { const el = document.getElementById("sync-status"); if (el) el.innerHTML = describe(); }
+  const post = (payload) => http("POST", payload);
+  const get = (action) => http("GET", { action });
+
+  const setState = (state, msg) => { st.state = state; st.msg = msg || ""; if (state === "ok") st.last = new Date().toISOString(); const el = document.getElementById("sync-status"); if (el) el.innerHTML = describe(); };
   function describe() {
     if (!enabled()) return `<span class="dot off"></span>Sin configurar`;
     const t = st.last ? ` · última vez ${E.fmtClock(Date.parse(st.last))}` : "";
@@ -875,40 +890,80 @@ const Sync = (() => {
     if (st.state === "error") return `<span class="dot err"></span>No se pudo sincronizar: ${esc(st.msg)}`;
     return `<span class="dot wait"></span>Listo para sincronizar`;
   }
+  const dirty = () => records.some((r) => snap.get(r.id) !== ser(toObj(r))) || [...snap.keys()].some((id) => !records.some((r) => r.id === id)) || settingsDirty();
+  const settingsOut = () => { const o = {}; SETTING_KEYS.forEach((k) => { if (settings[k] != null && settings[k] !== "") o[k] = settings[k]; }); return o; };
+  const settingsDirty = () => synced && SETTING_KEYS.some((k) => settings[k] != null && String(settings[k]) !== String(remoteSettings[k] == null ? "" : remoteSettings[k]));
 
-  async function push() {
+  // Envía a la hoja solo lo que cambió desde la última sincronización. all=true reenvía todo.
+  async function flush(all) {
     if (!enabled()) return false;
+    if (!synced) { try { await pull(); } catch (e) { return false; } }
     if (busy) { again = true; return false; }
     busy = true; setState("syncing");
+    let added = 0, updated = 0, removed = 0;
     try {
-      const data = await call({ action: "upsert", rows: records.map(toRow), config: { standardWeeklyHours: settings.standardWeeklyHours, lunchMin: settings.lunchMin, lunchMax: settings.lunchMax, lunchRequiredHours: settings.lunchRequiredHours } });
-      failStreak = 0; setState("ok"); return data;
+      const local = new Map(records.map((r) => [r.id, r]));
+      for (const id of [...snap.keys()]) if (!local.has(id)) { await post({ action: "deleteRecord", id }); snap.delete(id); removed++; }
+      for (const r of records) {
+        const o = toObj(r), s = ser(o), prev = snap.get(r.id);
+        if (prev === undefined) { await post({ action: "addRecord", record: o }); added++; }
+        else if (prev !== s || all) { const patch = Object.assign({}, o); delete patch.id; await post({ action: "updateRecord", id: r.id, patch }); if (prev !== s) updated++; }
+        snap.set(r.id, s);
+      }
+      if (settingsDirty()) { const so = settingsOut(); await post({ action: "saveSettings", settings: so }); Object.assign(remoteSettings, so); }
+      failStreak = 0; setState("ok"); return { ok: true, added, updated, removed };
     } catch (e) {
-      setState("error", e.message); if (failStreak++ === 0) toast("Google Sheets no se actualizó: " + e.message + ". Los datos están guardados en la plataforma.");
+      setState("error", e.message); if (failStreak++ === 0) toast("Google Sheets no se actualizó: " + e.message + ". Los datos quedan en este dispositivo y se reintenta.");
       return false;
     } finally { busy = false; if (again) { again = false; schedulePush(); } }
   }
+  const push = () => flush(true);
+
+  // Lee la hoja y la refleja aquí (la hoja manda); lo local sin enviar se conserva.
   async function pull() {
-    if (!enabled()) return { added: 0 };
+    if (!enabled()) return { added: 0, updated: 0 };
+    if (synced && dirty() && !busy) await flush();
     setState("syncing");
     try {
-      const data = await call({ action: "list" });
-      let added = 0;
-      (data.rows || []).forEach((row) => { const r = fromRow(row); if (r && !known(r)) { records.push(r); added++; } });
-      if (added) await saveRecords();
-      failStreak = 0; setState("ok"); return { added, total: (data.rows || []).length };
+      const [recs, sett] = await Promise.all([get("getRecords"), get("getSettings")]);
+      if (!Array.isArray(recs)) throw new Error("Respuesta inválida de la hoja");
+      const remote = new Map(); recs.forEach((o) => { const r = fromObj(o); if (r) remote.set(r.id, r); });
+      let added = 0, updated = 0, changed = false;
+      const byId = new Map(records.map((r) => [r.id, r]));
+      // duplicados de la plataforma antigua: mismo nombre y entrada (±60 s) con distinto id
+      const dup = (r) => records.some((x) => !remote.has(x.id) && x.name === r.name && Math.abs(Date.parse(x.checkIn) - Date.parse(r.checkIn)) < 60000 && !snap.has(x.id));
+      remote.forEach((r, id) => {
+        const cur = byId.get(id);
+        if (cur) { const before = ser(toObj(cur)); Object.assign(cur, { name: r.name, date: r.date, checkIn: r.checkIn, lunchOut: r.lunchOut, lunchIn: r.lunchIn, lunchSkipped: r.lunchSkipped, checkOut: r.checkOut }); if (before !== ser(toObj(cur))) { updated++; changed = true; } }
+        else if (!dup(r)) { records.push(r); added++; changed = true; }
+        snap.set(id, ser(toObj(remote.get(id))));
+      });
+      // lo que estaba sincronizado y ya no está en la hoja se borró en otro dispositivo
+      const gone = records.filter((r) => snap.has(r.id) && !remote.has(r.id));
+      if (gone.length) { records = records.filter((r) => !gone.includes(r)); gone.forEach((r) => snap.delete(r.id)); changed = true; }
+      records.forEach((r) => { if (remote.has(r.id)) snap.set(r.id, ser(toObj(remote.get(r.id)))); });
+      if (sett && typeof sett === "object" && !Array.isArray(sett)) {
+        remoteSettings = {}; SETTING_KEYS.forEach((k) => { if (sett[k] != null && sett[k] !== "") remoteSettings[k] = sett[k]; });
+        const num = (k) => { const n = Number(remoteSettings[k]); if (isFinite(n) && n > 0) settings[k] = n; };
+        ["standardWeeklyHours", "lunchMin", "lunchMax", "lunchRequiredHours"].forEach(num);
+        if (remoteSettings.adminPin) settings.adminPin = String(remoteSettings.adminPin);
+        await saveSettings();
+      }
+      synced = true;
+      if (changed) await saveRecords({ replace: true, noSync: true });
+      failStreak = 0; setState("ok"); return { added, updated, total: remote.size };
     } catch (e) { setState("error", e.message); throw e; }
   }
-  function schedulePush() { if (!enabled() || !cfg().auto) return; clearTimeout(timer); timer = setTimeout(push, 4000); }
-  async function test() { setState("syncing"); try { const d = await call({ action: "ping" }); setState("ok"); return d; } catch (e) { setState("error", e.message); throw e; } }
+  function schedulePush() { if (!enabled() || !cfg().auto) return; clearTimeout(timer); timer = setTimeout(() => flush(), 3000); }
+  async function test() { setState("syncing"); try { const d = await get("getSettings"); if (!d || typeof d !== "object") throw new Error("Respuesta inválida"); setState("ok"); return d; } catch (e) { setState("error", e.message); throw e; } }
   window.addEventListener("online", () => { if (enabled() && st.state === "error") schedulePush(); });
 
-  // Respaldo sin red: CSV con el mismo orden de columnas de la hoja «Registros»
+  // Respaldo sin red: CSV con las columnas de la hoja «Registros»
   function csv() {
     const q = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     return records.slice().sort((a, b) => (a.checkIn < b.checkIn ? -1 : 1)).map((r) => toRow(r).map((v) => q(v === true ? "TRUE" : v === false ? "FALSE" : v)).join(",")).join("\n") + "\n";
   }
-  return { enabled, push, pull, test, schedulePush, describe, csv, toRow, fromRow, cfg, URL_RE, state: st };
+  return { enabled, push, pull, test, schedulePush, describe, csv, toRow, fromRow, cfg, URL_RE, state: st, flush, dirty };
 })();
 
 </script>
@@ -996,11 +1051,11 @@ const saveRecords = async (opts) => {
       const remote = await store.get(RECORDS_KEY);
       if (Array.isArray(remote)) { const mine = new Set(records.map((r) => r.id)); remote.forEach((r) => { if (r && !mine.has(r.id)) records.push(r); }); }
     }
-    if (!(await store.set(RECORDS_KEY, records))) toast("No se pudo guardar. Intenta de nuevo."); else Sync.schedulePush();
+    if (!(await store.set(RECORDS_KEY, records))) toast("No se pudo guardar. Intenta de nuevo."); else if (!(opts && opts.noSync)) Sync.schedulePush();
   } finally { saving--; }
 };
-async function refreshRecords() { if (saving) return; const remote = await store.get(RECORDS_KEY); if (Array.isArray(remote) && !saving) records = remote; }
-const saveSettings = async () => { if (!(await store.set(SETTINGS_KEY, settings))) toast("No se pudo guardar la configuración."); };
+async function refreshRecords() { if (saving) return; if (Sync.enabled()) { try { await Sync.pull(); } catch (e) {} return; } const remote = await store.get(RECORDS_KEY); if (Array.isArray(remote) && !saving) records = remote; }
+const saveSettings = async () => { if (!(await store.set(SETTINGS_KEY, settings))) toast("No se pudo guardar la configuración."); else Sync.schedulePush(); };
 const savePayroll = async () => { if (!(await store.set(PAYROLL_KEY, payroll))) toast("No se pudo guardar los salarios."); };
 
 /* ---------- Avisos y ventanas ---------- */
@@ -1361,10 +1416,10 @@ function viewAjustes() {
         <select data-chg="crossing" style="width:230px"><option value="fromStart" ${settings.crossing === "fromStart" ? "selected" : ""}>Contar desde el inicio de la quincena</option><option value="fullWeek" ${settings.crossing === "fullWeek" ? "selected" : ""}>Contar la semana completa</option></select></div>
       <div class="setting"><div><b>PIN de administración</b><small>Compártelo solo con quien deba ver horas y salarios.</small></div><input type="text" data-chg="pin" maxlength="8" value="${esc(settings.adminPin)}"></div>
     </div>
-    <div class="section"><h3>Google Sheets</h3><small>Opcional. Copia los registros a la hoja «Mystic - Control de Horas (Base de Datos)» cada vez que cambian. No se envían salarios ni el PIN.</small></div>
+    <div class="section"><h3>Google Sheets</h3><small>La hoja «Mystic - Control de Horas (Base de Datos)» es la base de datos compartida: los registros se leen de ahí y cada marcación se guarda ahí. No se envían salarios ni ausencias.</small></div>
     <div class="panel">
-      <div class="setting"><div><b>Dirección de la aplicación web</b><small>La que entrega Apps Script al implementar (termina en /exec). Ver instrucciones en la guía.</small></div><input type="text" data-chg="sheetUrl" value="${esc(settings.sheetUrl)}" placeholder="https://script.google.com/macros/s/…/exec" style="width:min(380px,100%);text-align:left"></div>
-      <div class="setting"><div><b>Token</b><small>El que muestra la función <code>configurar</code> del script.</small></div><input type="password" data-chg="sheetToken" value="${esc(settings.sheetToken)}" placeholder="••••••••" autocomplete="off" style="width:min(380px,100%);text-align:left"></div>
+      <div class="setting"><div><b>Dirección de la aplicación web</b><small>Ya viene la del script actual. Solo cámbiala si se vuelve a implementar el script (termina en /exec).</small></div><input type="text" data-chg="sheetUrl" value="${esc(settings.sheetUrl)}" placeholder="(la del script actual)" style="width:min(380px,100%);text-align:left"></div>
+      <div class="setting"><div><b>Token (opcional)</b><small>Solo si el script se protege con token. Déjalo vacío si no.</small></div><input type="password" data-chg="sheetToken" value="${esc(settings.sheetToken)}" placeholder="••••••••" autocomplete="off" style="width:min(380px,100%);text-align:left"></div>
       <div class="setting"><div><b>Enviar automáticamente</b><small>Se actualiza unos segundos después de cada marcación o cambio.</small></div><select data-chg="sheetAuto"><option value="1" ${settings.sheetAuto !== false ? "selected" : ""}>Sí</option><option value="0" ${settings.sheetAuto === false ? "selected" : ""}>No</option></select></div>
       <div class="setting"><div><b>Estado</b><small id="sync-status">${Sync.describe()}</small></div>
         <div class="btn-group"><button class="btn btn-ghost btn-sm" data-act="sheet-test" style="width:auto">Probar</button><button class="btn btn-ghost btn-sm" data-act="sheet-push" style="width:auto">Enviar todo</button><button class="btn btn-ghost btn-sm" data-act="sheet-pull" style="width:auto">Traer de la hoja</button><button class="btn btn-ghost btn-sm" data-act="sheet-csv" style="width:auto">Descargar CSV</button></div></div>
@@ -1494,8 +1549,8 @@ const actions = {
   },
   "del-absence": async (t) => { payroll.absences = payroll.absences.filter((a) => a.id !== t.dataset.id); await savePayroll(); render(); },
   "sheet-test": async () => { try { await Sync.test(); toast("Conexión con Google Sheets correcta"); } catch (e) { toast("No conectó: " + e.message); } },
-  "sheet-push": async () => { if (!Sync.enabled()) return toast("Primero escribe la dirección y el token."); const ok = await Sync.push(); if (ok) toast(`Hoja actualizada (${ok.updated || 0} cambios, ${ok.added || 0} nuevos)`); },
-  "sheet-pull": async () => { if (!Sync.enabled()) return toast("Primero escribe la dirección y el token."); try { const r = await Sync.pull(); toast(r.added ? `${r.added} registro(s) traídos de la hoja` : "La plataforma ya tiene todo lo de la hoja"); render(); } catch (e) { toast("No se pudo leer la hoja: " + e.message); } },
+  "sheet-push": async () => { if (!Sync.enabled()) return toast("La conexión con Google Sheets no está disponible."); const ok = await Sync.push(); if (ok) toast(`Hoja actualizada (${ok.updated || 0} cambios, ${ok.added || 0} nuevos)`); },
+  "sheet-pull": async () => { if (!Sync.enabled()) return toast("La conexión con Google Sheets no está disponible."); try { const r = await Sync.pull(); toast(r.added ? `${r.added} registro(s) traídos de la hoja` : "La plataforma ya tiene todo lo de la hoja"); render(); } catch (e) { toast("No se pudo leer la hoja: " + e.message); } },
   "sheet-csv": () => { download(`mystic-registros-${today()}.csv`, "\ufeff" + Sync.csv(), "text/csv;charset=utf-8"); toast("CSV descargado (mismo orden de columnas de la hoja)"); },
   backup: () => { download(`mystic-respaldo-${today()}.json`, JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), records, settings, payroll }, null, 1), "application/json"); toast("Copia descargada"); },
   restore: () => $("#restore-file").click()
@@ -1563,12 +1618,18 @@ function tick() {
   $("#clock-d").textContent = n.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", timeZone: "America/Bogota" });
 }
 setInterval(tick, 1000);
-setInterval(async () => { if (!isAdmin && !$("#modal")) { await refreshRecords(); if (!isAdmin && !$("#modal")) render(); } }, 60000);
+setInterval(async () => { if (!$("#modal")) { await refreshRecords(); if (!isAdmin && !$("#modal")) render(); } }, 60000);
 window.addEventListener("resize", () => { placeThumb($("#seg-main")); if (isAdmin) placeThumb($("#seg-sub")); });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { placeThumb($("#seg-main")); if (isAdmin) placeThumb($("#seg-sub")); });
 (async function init() {
-  tick(); await loadData(); ui.period = E.periodOf(today()); render();
-  if (Sync.enabled()) Sync.pull().then((r) => { if (r.added) { toast(`${r.added} registro(s) nuevo(s) traídos de la hoja`); render(); } }).catch(() => {}).finally(() => Sync.schedulePush());
+  tick(); await loadData(); ui.period = E.periodOf(today());
+  if (Sync.enabled()) {
+    toast("Conectando con la hoja…");
+    const pulled = Sync.pull().catch(() => null);
+    await Promise.race([pulled, new Promise((res) => setTimeout(res, 6000))]);
+    render();
+    pulled.then((r) => { if (r && (r.added || r.updated)) render(); }).finally(() => Sync.schedulePush());
+  } else render();
 })();
 
 </script>
