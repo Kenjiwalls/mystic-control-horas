@@ -824,9 +824,8 @@ const Sync = (() => {
   const st = { state: "off", last: null, msg: "" };
   const URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
   const SETTING_KEYS = ["standardWeeklyHours", "lunchMin", "lunchMax", "lunchRequiredHours", "adminPin"];
-  let timer = null, busy = false, again = false, failStreak = 0;
+  let timer = null, failStreak = 0;
   let synced = false;            // ¿ya se leyó la hoja en esta sesión? (no se envía nada antes)
-  let snap = new Map();          // id → fila serializada tal como está en la hoja
   let remoteSettings = {};       // últimos ajustes conocidos de la hoja
 
   const cfg = () => ({ url: String(settings.sheetUrl || DEFAULT_URL).trim(), token: String(settings.sheetToken || "").trim(), auto: settings.sheetAuto !== false });
@@ -890,71 +889,91 @@ const Sync = (() => {
     if (st.state === "error") return `<span class="dot err"></span>No se pudo sincronizar: ${esc(st.msg)}`;
     return `<span class="dot wait"></span>Listo para sincronizar`;
   }
-  const dirty = () => records.some((r) => snap.get(r.id) !== ser(toObj(r))) || [...snap.keys()].some((id) => !records.some((r) => r.id === id)) || settingsDirty();
+  const GRACE = 120000;          // tras escribir un registro, ignoramos lecturas de la hoja sobre él durante 2 min (lecturas atrasadas)
+  const FIELDS = ["name", "date", "checkIn", "lunchOut", "lunchIn", "lunchSkipped", "checkOut"];
+  let objSnap = new Map();       // id → objeto tal como está en la hoja
+  const touched = new Map();     // id → última vez que ESTE dispositivo lo escribió
+  const misses = new Map();      // id → lecturas consecutivas en las que la hoja no lo trae
+  let chain = Promise.resolve();
+  const enqueue = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };   // una sola operación a la vez
+
+  const diffOf = (r) => { const o = toObj(r), p = objSnap.get(r.id); if (!p) return null; const patch = {}; FIELDS.forEach((k) => { if (String(o[k]) !== String(p[k])) patch[k] = o[k]; }); return patch; };
+  const isDirtyRec = (r) => { const p = objSnap.get(r.id); return !p || Object.keys(diffOf(r) || {}).length > 0; };
+  const dirty = () => records.some(isDirtyRec) || [...objSnap.keys()].some((id) => !records.some((r) => r.id === id)) || settingsDirty();
   const settingsOut = () => { const o = {}; SETTING_KEYS.forEach((k) => { if (settings[k] != null && settings[k] !== "") o[k] = settings[k]; }); return o; };
   const settingsDirty = () => synced && SETTING_KEYS.some((k) => settings[k] != null && String(settings[k]) !== String(remoteSettings[k] == null ? "" : remoteSettings[k]));
 
-  // Envía a la hoja solo lo que cambió desde la última sincronización. all=true reenvía todo.
-  async function flush(all) {
+  // Envía a la hoja solo lo que cambió (por campo) desde la última sincronización. all=true reenvía todo.
+  async function doFlush(all) {
     if (!enabled()) return false;
-    if (!synced) { try { await pull(); } catch (e) { return false; } }
-    if (busy) { again = true; return false; }
-    busy = true; setState("syncing");
+    if (!synced) { try { await doPull(true); } catch (e) { return false; } }
+    setState("syncing");
     let added = 0, updated = 0, removed = 0;
     try {
       const local = new Map(records.map((r) => [r.id, r]));
-      for (const id of [...snap.keys()]) if (!local.has(id)) { await post({ action: "deleteRecord", id }); snap.delete(id); removed++; }
-      for (const r of records) {
-        const o = toObj(r), s = ser(o), prev = snap.get(r.id);
-        if (prev === undefined) { await post({ action: "addRecord", record: o }); added++; }
-        else if (prev !== s || all) { const patch = Object.assign({}, o); delete patch.id; await post({ action: "updateRecord", id: r.id, patch }); if (prev !== s) updated++; }
-        snap.set(r.id, s);
+      for (const id of [...objSnap.keys()]) if (!local.has(id)) { await post({ action: "deleteRecord", id }); objSnap.delete(id); touched.set(id, Date.now()); removed++; }
+      for (const r of records.slice()) {
+        const o = toObj(r), prev = objSnap.get(r.id);
+        if (!prev) { await post({ action: "addRecord", record: o }); added++; touched.set(r.id, Date.now()); }
+        else {
+          const patch = all ? Object.assign({}, o) : diffOf(r); if (patch) delete patch.id;
+          if (patch && Object.keys(patch).length) { await post({ action: "updateRecord", id: r.id, patch }); if (!all) updated++; touched.set(r.id, Date.now()); }
+        }
+        objSnap.set(r.id, Object.assign({}, o));
       }
       if (settingsDirty()) { const so = settingsOut(); await post({ action: "saveSettings", settings: so }); Object.assign(remoteSettings, so); }
       failStreak = 0; setState("ok"); return { ok: true, added, updated, removed };
     } catch (e) {
       setState("error", e.message); if (failStreak++ === 0) toast("Google Sheets no se actualizó: " + e.message + ". Los datos quedan en este dispositivo y se reintenta.");
-      return false;
-    } finally { busy = false; if (again) { again = false; schedulePush(); } }
+      setTimeout(schedulePush, 8000); return false;
+    }
   }
+  const flush = (all) => enqueue(() => doFlush(all));
   const push = () => flush(true);
 
-  // Lee la hoja y la refleja aquí (la hoja manda); lo local sin enviar se conserva.
-  async function pull() {
+  // Lee la hoja y la refleja aquí. Reglas para no perder lo recién marcado:
+  //  · nunca corre a la vez que un envío; antes de leer, envía lo pendiente;
+  //  · no toca registros con cambios sin enviar ni escritos hace menos de 2 min (la lectura puede venir atrasada);
+  //  · un registro solo se da por borrado en otro dispositivo si la hoja no lo trae en 2 lecturas seguidas.
+  async function doPull(skipFlush) {
     if (!enabled()) return { added: 0, updated: 0 };
-    if (synced && dirty() && !busy) await flush();
+    if (!skipFlush && synced && dirty()) await doFlush();
     setState("syncing");
     try {
       const [recs, sett] = await Promise.all([get("getRecords"), get("getSettings")]);
       if (!Array.isArray(recs)) throw new Error("Respuesta inválida de la hoja");
       const remote = new Map(); recs.forEach((o) => { const r = fromObj(o); if (r) remote.set(r.id, r); });
-      let added = 0, updated = 0, changed = false;
+      const now = Date.now(); let added = 0, updated = 0, changed = false;
+      const protectedRec = (r) => isDirtyRec(r) && objSnap.has(r.id) || now - (touched.get(r.id) || 0) < GRACE;
       const byId = new Map(records.map((r) => [r.id, r]));
-      // duplicados de la plataforma antigua: mismo nombre y entrada (±60 s) con distinto id
-      const dup = (r) => records.some((x) => !remote.has(x.id) && x.name === r.name && Math.abs(Date.parse(x.checkIn) - Date.parse(r.checkIn)) < 60000 && !snap.has(x.id));
+      const dup = (r) => records.some((x) => !remote.has(x.id) && !objSnap.has(x.id) && x.name === r.name && Math.abs(Date.parse(x.checkIn) - Date.parse(r.checkIn)) < 60000);
       remote.forEach((r, id) => {
-        const cur = byId.get(id);
-        if (cur) { const before = ser(toObj(cur)); Object.assign(cur, { name: r.name, date: r.date, checkIn: r.checkIn, lunchOut: r.lunchOut, lunchIn: r.lunchIn, lunchSkipped: r.lunchSkipped, checkOut: r.checkOut }); if (before !== ser(toObj(cur))) { updated++; changed = true; } }
-        else if (!dup(r)) { records.push(r); added++; changed = true; }
-        snap.set(id, ser(toObj(remote.get(id))));
+        misses.delete(id); const cur = byId.get(id);
+        if (cur) {
+          if (protectedRec(cur)) return;
+          const before = ser(toObj(cur)); Object.assign(cur, { name: r.name, date: r.date, checkIn: r.checkIn, lunchOut: r.lunchOut, lunchIn: r.lunchIn, lunchSkipped: r.lunchSkipped, checkOut: r.checkOut });
+          if (before !== ser(toObj(cur))) { updated++; changed = true; }
+          objSnap.set(id, toObj(r));
+        } else if (!dup(r)) { if (now - (touched.get(id) || 0) < GRACE) return; records.push(r); objSnap.set(id, toObj(r)); added++; changed = true; }
       });
-      // lo que estaba sincronizado y ya no está en la hoja se borró en otro dispositivo
-      const gone = records.filter((r) => snap.has(r.id) && !remote.has(r.id));
-      if (gone.length) { records = records.filter((r) => !gone.includes(r)); gone.forEach((r) => snap.delete(r.id)); changed = true; }
-      records.forEach((r) => { if (remote.has(r.id)) snap.set(r.id, ser(toObj(remote.get(r.id)))); });
+      const gone = records.filter((r) => objSnap.has(r.id) && !remote.has(r.id) && !protectedRec(r) && (misses.set(r.id, (misses.get(r.id) || 0) + 1), misses.get(r.id) >= 2));
+      if (gone.length) { records = records.filter((r) => !gone.includes(r)); gone.forEach((r) => { objSnap.delete(r.id); misses.delete(r.id); }); changed = true; }
       if (sett && typeof sett === "object" && !Array.isArray(sett)) {
         remoteSettings = {}; SETTING_KEYS.forEach((k) => { if (sett[k] != null && sett[k] !== "") remoteSettings[k] = sett[k]; });
-        const num = (k) => { const n = Number(remoteSettings[k]); if (isFinite(n) && n > 0) settings[k] = n; };
-        ["standardWeeklyHours", "lunchMin", "lunchMax", "lunchRequiredHours"].forEach(num);
-        if (remoteSettings.adminPin) settings.adminPin = String(remoteSettings.adminPin);
-        await saveSettings();
+        if (!synced) {   // los ajustes de la hoja mandan al abrir; después, lo que se cambie aquí se envía
+          const num = (k) => { const n = Number(remoteSettings[k]); if (isFinite(n) && n > 0) settings[k] = n; };
+          ["standardWeeklyHours", "lunchMin", "lunchMax", "lunchRequiredHours"].forEach(num);
+          if (remoteSettings.adminPin) settings.adminPin = String(remoteSettings.adminPin);
+          await saveSettings();
+        }
       }
       synced = true;
       if (changed) await saveRecords({ replace: true, noSync: true });
       failStreak = 0; setState("ok"); return { added, updated, total: remote.size };
     } catch (e) { setState("error", e.message); throw e; }
   }
-  function schedulePush() { if (!enabled() || !cfg().auto) return; clearTimeout(timer); timer = setTimeout(() => flush(), 3000); }
+  const pull = () => enqueue(() => doPull());
+  function schedulePush() { if (!enabled() || !cfg().auto) return; clearTimeout(timer); timer = setTimeout(() => { flush(); }, 2000); }
   async function test() { setState("syncing"); try { const d = await get("getSettings"); if (!d || typeof d !== "object") throw new Error("Respuesta inválida"); setState("ok"); return d; } catch (e) { setState("error", e.message); throw e; } }
   window.addEventListener("online", () => { if (enabled() && st.state === "error") schedulePush(); });
 
@@ -1625,7 +1644,12 @@ function tick() {
   $("#clock-d").textContent = n.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", timeZone: "America/Bogota" });
 }
 setInterval(tick, 1000);
-setInterval(async () => { if (!$("#modal")) { await refreshRecords(); if (!isAdmin && !$("#modal")) render(); } }, 60000);
+// La vista del equipo se refresca cada 15 s (tablet de la bodega, celulares); la de administración cada 60 s. También al volver a la pestaña.
+let pollN = 0;
+async function pollNow() { if ($("#modal")) return; await refreshRecords(); if (!isAdmin && !$("#modal")) render(); }
+setInterval(() => { pollN++; if (!isAdmin || pollN % 4 === 0) pollNow(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollNow(); });
+window.addEventListener("focus", () => pollNow());
 window.addEventListener("resize", () => { placeThumb($("#seg-main")); if (isAdmin) placeThumb($("#seg-sub")); });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { placeThumb($("#seg-main")); if (isAdmin) placeThumb($("#seg-sub")); });
 (async function init() {
